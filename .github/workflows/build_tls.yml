@@ -1,0 +1,86 @@
+name: Build Custom iPXE with GUI + HTTPS
+
+on:
+workflow_dispatch:
+inputs:
+tag_name:
+description: 'Release 标签名 (例如: v1.0.0-gui)'
+required: true
+default: 'v1.0.1-gui-https'
+
+permissions:
+contents: write
+
+jobs:
+build:
+runs-on: ubuntu-latest
+
+````
+steps:
+  - name: 1. 安装编译依赖环境
+    run: |
+      sudo apt-get update
+      sudo apt-get install -y git build-essential liblzma-dev
+
+  - name: 2. 拉取官方 iPXE 最新源码
+    run: |
+      git clone https://github.com/ipxe/ipxe.git .
+
+  - name: 3. 注入配置 (GUI + HTTPS)
+    run: |
+      mkdir -p src/config/local/
+
+      # ===== 基础功能 + GUI =====
+      cat <<EOF > src/config/local/general.h
+      #define CONSOLE_CMD
+      #define CONSOLE_FRAMEBUFFER
+      #define IMAGE_PNG
+      #define IMAGE_JPEG
+
+      /* ===== 关键：开启 HTTPS 支持 ===== */
+      #define DOWNLOAD_PROTO_HTTPS
+      #define DOWNLOAD_PROTO_HTTP
+
+      #define CRYPTO_*
+      #define TLS
+      #define IMAGE_TRUST_CMD   /* 可选：证书信任命令 */
+      EOF
+
+      # ===== 显示 =====
+      cat <<EOF > src/config/local/console.h
+      #define CONSOLE_VESAFB
+      #define CONSOLE_EFIFB
+      EOF
+
+  - name: 4. 编译 BIOS 固件 (undionly.kpxe)
+    run: |
+      cd src
+      make bin/undionly.kpxe -j$(nproc)
+
+  - name: 5. 编译 UEFI 固件 (ipxe.efi)
+    run: |
+      cd src
+      make bin-x86_64-efi/ipxe.efi -j$(nproc)
+
+  - name: 6. 创建 Release 并上传
+    uses: softprops/action-gh-release@v1
+    with:
+      tag_name: ${{ github.event.inputs.tag_name }}
+      name: Custom iPXE Release (${{ github.event.inputs.tag_name }})
+      body: |
+        ## 自定义 iPXE 固件 (GUI + HTTPS) 🎉
+
+        **功能：**
+        - ✅ GUI + 背景图 (PNG/JPEG)
+        - ✅ 高分辨率 (VESA / EFI)
+        - ✅ HTTPS 支持 (已修复 3c092003 错误)
+
+        **现在支持：**
+        ```
+        chain https://pxe.nyist.edu.cn/menu.ipxe
+        ```
+
+      files: |
+        src/bin/undionly.kpxe
+        src/bin-x86_64-efi/ipxe.efi
+````
