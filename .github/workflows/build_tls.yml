@@ -1,86 +1,89 @@
-name: Build Custom iPXE with GUI + HTTPS
+name: Build Custom iPXE with GUI
 
+# 触发条件：手动触发 (支持自定义标签名)
 on:
-workflow_dispatch:
-inputs:
-tag_name:
-description: 'Release 标签名 (例如: v1.0.0-gui)'
-required: true
-default: 'v1.0.1-gui-https'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release 标签名 (例如: v1.0.0-gui)'
+        required: true
+        default: 'v1.0.0-gui'
 
+# 赋予 Action 读写权限，以便能够创建 Release 页面
 permissions:
-contents: write
+  contents: write
 
 jobs:
-build:
-runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-latest
 
-````
-steps:
-  - name: 1. 安装编译依赖环境
-    run: |
-      sudo apt-get update
-      sudo apt-get install -y git build-essential liblzma-dev
+    steps:
+      - name: 1. 安装编译依赖环境
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential liblzma-dev mtools mkisofs
 
-  - name: 2. 拉取官方 iPXE 最新源码
-    run: |
-      git clone https://github.com/ipxe/ipxe.git .
+      - name: 2. 拉取官方 iPXE 最新源码
+        # 使用官方 checkout action 替代原生 git clone，集成度更高更稳定
+        uses: actions/checkout@v4
+        with:
+          repository: 'ipxe/ipxe'
+          fetch-depth: 1
 
-  - name: 3. 注入配置 (GUI + HTTPS)
-    run: |
-      mkdir -p src/config/local/
+      - name: 3. 自动注入配置 (开启图形化、图片及 HTTPS 支持)
+        run: |
+          mkdir -p src/config/local/
+          
+          # 开启控制台命令、PNG/JPEG 图片格式支持、HTTPS 支持
+          cat <<EOF > src/config/local/general.h
+          #define CONSOLE_CMD          /* 开启 console 控制台命令 */
+          #define CONSOLE_FRAMEBUFFER  /* 开启 帧缓冲支持 */
+          #define IMAGE_PNG            /* 开启 PNG 图片解析 */
+          #define IMAGE_JPEG           /* 开启 JPEG 图片解析 */
+          #define DOWNLOAD_PROTO_HTTPS /* 开启 HTTPS 下载支持 (极其推荐) */
+          EOF
 
-      # ===== 基础功能 + GUI =====
-      cat <<EOF > src/config/local/general.h
-      #define CONSOLE_CMD
-      #define CONSOLE_FRAMEBUFFER
-      #define IMAGE_PNG
-      #define IMAGE_JPEG
+          # 开启高分辨率帧缓冲 (BIOS 的 VESA 模式 和 UEFI 的 GOP 模式)
+          cat <<EOF > src/config/local/console.h
+          #define CONSOLE_VESAFB       /* BIOS 高清分辨率支持 */
+          #define CONSOLE_EFIFB        /* UEFI 高清分辨率支持 */
+          EOF
 
-      /* ===== 关键：开启 HTTPS 支持 ===== */
-      #define DOWNLOAD_PROTO_HTTPS
-      #define DOWNLOAD_PROTO_HTTP
+      - name: 4. 编译传统 BIOS 固件 (undionly.kpxe)
+        run: |
+          cd src
+          make bin/undionly.kpxe -j$(nproc)
 
-      #define CRYPTO_*
-      #define TLS
-      #define IMAGE_TRUST_CMD   /* 可选：证书信任命令 */
-      EOF
+      - name: 5. 编译 UEFI 固件 (ipxe.efi)
+        run: |
+          cd src
+          make bin-x86_64-efi/ipxe.efi -j$(nproc)
+          
+      - name: 6. 上传 Artifacts (防止 Release 失败时文件丢失)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipxe-firmware
+          path: |
+            src/bin/undionly.kpxe
+            src/bin-x86_64-efi/ipxe.efi
 
-      # ===== 显示 =====
-      cat <<EOF > src/config/local/console.h
-      #define CONSOLE_VESAFB
-      #define CONSOLE_EFIFB
-      EOF
-
-  - name: 4. 编译 BIOS 固件 (undionly.kpxe)
-    run: |
-      cd src
-      make bin/undionly.kpxe -j$(nproc)
-
-  - name: 5. 编译 UEFI 固件 (ipxe.efi)
-    run: |
-      cd src
-      make bin-x86_64-efi/ipxe.efi -j$(nproc)
-
-  - name: 6. 创建 Release 并上传
-    uses: softprops/action-gh-release@v1
-    with:
-      tag_name: ${{ github.event.inputs.tag_name }}
-      name: Custom iPXE Release (${{ github.event.inputs.tag_name }})
-      body: |
-        ## 自定义 iPXE 固件 (GUI + HTTPS) 🎉
-
-        **功能：**
-        - ✅ GUI + 背景图 (PNG/JPEG)
-        - ✅ 高分辨率 (VESA / EFI)
-        - ✅ HTTPS 支持 (已修复 3c092003 错误)
-
-        **现在支持：**
-        ```
-        chain https://pxe.nyist.edu.cn/menu.ipxe
-        ```
-
-      files: |
-        src/bin/undionly.kpxe
-        src/bin-x86_64-efi/ipxe.efi
-````
+      - name: 7. 创建 Release 并上传编译好的固件
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          name: Custom iPXE Release (${{ inputs.tag_name }})
+          body: |
+            ## 自定义 iPXE 固件自动编译完成 🎉
+            
+            **已集成的核心功能：**
+            - ✅ `console` 命令支持 (可设置背景)
+            - ✅ PNG 和 JPEG 格式背景图片解析支持
+            - ✅ 高分辨率图形缓冲 (VESA & EFI)
+            - ✅ HTTPS 下载支持 (增强网络兼容性与安全)
+            
+            下载下方的 `undionly.kpxe` 和 `ipxe.efi`，替换掉你 TFTP 服务器上的同名文件即可！
+          draft: false
+          prerelease: false
+          files: |
+            src/bin/undionly.kpxe
+            src/bin-x86_64-efi/ipxe.efi
